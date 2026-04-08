@@ -213,12 +213,14 @@ def import_excel(conn: sqlite3.Connection, excel_path: str) -> int:
             year = None
 
         release_date = _excel_serial_to_iso(row.get("date_serial"))
-        studio       = (row.get("studio") or "").strip() or None
-        cast_raw     = (row.get("cast_raw") or "").strip() or None
+        studio       = str(row["studio"]).strip()     if pd.notna(row.get("studio"))      else None
+        cast_raw     = str(row["cast_raw"]).strip()   if pd.notna(row.get("cast_raw"))    else None
+        studio       = studio   or None
+        cast_raw     = cast_raw or None
 
         # Try to get a better release date from raw_columns dict
         if not release_date:
-            raw = (row.get("raw_columns") or "").strip()
+            raw = str(row["raw_columns"]).strip() if pd.notna(row.get("raw_columns")) else ""
             if raw and raw != "nan":
                 try:
                     d = ast.literal_eval(raw)
