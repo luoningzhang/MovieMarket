@@ -28,22 +28,25 @@ Usage:
 
 import argparse
 import ast
+import configparser
 import os
 import sqlite3
 import time
 from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
 import requests
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
-EXCEL_FILE = "05-27美国电影.xlsx"
-DB_FILE    = "moviemarket.db"
+_cfg = configparser.ConfigParser()
+_cfg.read(Path(__file__).with_name("config.ini"))
 
-# Set via environment variables or edit here directly
-TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
-OMDB_API_KEY = os.getenv("OMDB_API_KEY", "")
+EXCEL_FILE   = _cfg.get("database", "excel_file", fallback="05-27美国电影.xlsx")
+DB_FILE      = _cfg.get("database", "db_file",    fallback="moviemarket.db")
+TMDB_API_KEY = _cfg.get("api", "tmdb_api_key",    fallback="")
+OMDB_API_KEY = _cfg.get("api", "omdb_api_key",    fallback="")
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 OMDB_BASE = "https://www.omdbapi.com"

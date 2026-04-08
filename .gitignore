@@ -1,0 +1,10 @@
+# Sensitive config (contains API keys)
+config.ini
+
+# Generated database
+*.db
+
+# Python
+__pycache__/
+*.pyc
+.env
