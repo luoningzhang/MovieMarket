@@ -125,9 +125,10 @@ CREATE TABLE IF NOT EXISTS certifications (
     UNIQUE (movie_id, country)
 );
 
--- Per-country release schedule (all release types from TMDb)
+-- Per-country release schedule (all release types from TMDb + inferred re-releases)
 -- release_type codes: 1=Premiere 2=LimitedTheatrical 3=Theatrical
 --                     4=Digital  5=Physical           6=TV
+--                     7=Re-release (inferred from Excel duplicate rows)
 CREATE TABLE IF NOT EXISTS release_schedule (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     movie_id      INTEGER NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
@@ -135,6 +136,7 @@ CREATE TABLE IF NOT EXISTS release_schedule (
     release_date  TEXT,            -- YYYY-MM-DD
     release_type  INTEGER,
     certification TEXT,            -- local age rating for this release
+    note          TEXT,            -- e.g. "3D re-release", "Director's Cut"
     UNIQUE (movie_id, country, release_type)
 );
 CREATE INDEX IF NOT EXISTS idx_schedule_movie   ON release_schedule(movie_id);
@@ -501,7 +503,42 @@ def enrich_tmdb(conn: sqlite3.Connection, limit: int | None = None):
             time.sleep(TMDB_SLEEP)
             continue
 
-        details = _tmdb_details(match["id"])
+        tmdb_id = match["id"]
+
+        # ── Re-release detection ──────────────────────────────────────────
+        # If another movies row already owns this tmdb_id, the current Excel
+        # row is a re-release (or duplicate).  Merge it: record the release
+        # date in release_schedule, then delete the redundant movies row.
+        original = cur.execute(
+            "SELECT id FROM movies WHERE tmdb_id=? AND id!=?", (tmdb_id, movie_id)
+        ).fetchone()
+
+        if original:
+            original_id = original["id"]
+            # Get the release date we stored during Excel import
+            cur_row = cur.execute(
+                "SELECT release_date, year FROM movies WHERE id=?", (movie_id,)
+            ).fetchone()
+            rdate = cur_row["release_date"]
+            ryear = cur_row["year"]
+            # Fall back to Jan 1 of the year if we only have a year
+            if not rdate and ryear:
+                rdate = f"{ryear}-01-01"
+            if rdate:
+                cur.execute("""
+                    INSERT OR IGNORE INTO release_schedule
+                        (movie_id, country, release_date, release_type, note)
+                    VALUES (?, 'US', ?, 7, ?)
+                """, (original_id, rdate, f"Re-release ({title})"))
+                print(f"  [Re-release] '{title}' {year} → merged into movie_id={original_id}")
+            # Delete the redundant row (CASCADE removes cast_crew etc.)
+            cur.execute("DELETE FROM movies WHERE id=?", (movie_id,))
+            conn.commit()
+            time.sleep(TMDB_SLEEP)
+            continue
+        # ─────────────────────────────────────────────────────────────────
+
+        details = _tmdb_details(tmdb_id)
         if details:
             _apply_tmdb_data(conn, cur, movie_id, details)
 

@@ -96,7 +96,7 @@ def show(conn, title_pattern):
             cert = r[0] if r else None
 
         # 各国上映信息
-        RTYPE = {1:"首映", 2:"限定上映", 3:"院线", 4:"数字", 5:"实体", 6:"电视"}
+        RTYPE = {1:"首映", 2:"限定上映", 3:"院线", 4:"数字", 5:"实体", 6:"电视", 7:"重映"}
         schedule = []
         if mid:
             schedule = cur.execute("""
