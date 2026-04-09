@@ -95,6 +95,17 @@ def show(conn, title_pattern):
             ).fetchone()
             cert = r[0] if r else None
 
+        # 各国上映信息
+        RTYPE = {1:"首映", 2:"限定上映", 3:"院线", 4:"数字", 5:"实体", 6:"电视"}
+        schedule = []
+        if mid:
+            schedule = cur.execute("""
+                SELECT country, release_date, release_type, certification
+                FROM release_schedule
+                WHERE movie_id=?
+                ORDER BY release_date, country
+            """, (mid,)).fetchall()
+
         enriched_status = {0: "仅Excel原始数据", 1: "已爬TMDb", 2: "已爬TMDb+OMDb"}
 
         print("=" * 60)
@@ -141,6 +152,16 @@ def show(conn, title_pattern):
                 print(f"               {l}")
         if row['tagline']:
             print(f"  Tagline     : {row['tagline']}")
+        # 各国上映时间表
+        if schedule:
+            print(f"\n  全球上映记录 ({len(schedule)} 条):")
+            for s in schedule[:30]:   # 最多显示 30 条
+                rtype = RTYPE.get(s["release_type"], f"type{s['release_type']}")
+                cert_s = f"  [{s['certification']}]" if s["certification"] else ""
+                print(f"    {s['country']}  {s['release_date'] or '—':12} {rtype}{cert_s}")
+            if len(schedule) > 30:
+                print(f"    … 共 {len(schedule)} 个国家/地区")
+
         print(f"\n  TMDb ID     : {row['tmdb_id'] or '—'}")
         print(f"  IMDb ID     : {row['imdb_id'] or '—'}")
         print(f"  数据状态    : {enriched_status.get(row['enriched'], row['enriched'])}")

@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS ratings (
     UNIQUE (movie_id, source)
 );
 
--- MPAA / content certifications
+-- MPAA / content certifications (one per country, highest-priority rating)
 CREATE TABLE IF NOT EXISTS certifications (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     movie_id INTEGER NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
@@ -124,6 +124,21 @@ CREATE TABLE IF NOT EXISTS certifications (
     rating   TEXT,                 -- G, PG, PG-13, R, NC-17, NR …
     UNIQUE (movie_id, country)
 );
+
+-- Per-country release schedule (all release types from TMDb)
+-- release_type codes: 1=Premiere 2=LimitedTheatrical 3=Theatrical
+--                     4=Digital  5=Physical           6=TV
+CREATE TABLE IF NOT EXISTS release_schedule (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    movie_id      INTEGER NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+    country       TEXT    NOT NULL,
+    release_date  TEXT,            -- YYYY-MM-DD
+    release_type  INTEGER,
+    certification TEXT,            -- local age rating for this release
+    UNIQUE (movie_id, country, release_type)
+);
+CREATE INDEX IF NOT EXISTS idx_schedule_movie   ON release_schedule(movie_id);
+CREATE INDEX IF NOT EXISTS idx_schedule_country ON release_schedule(country);
 
 -- Cast & crew
 CREATE TABLE IF NOT EXISTS cast_crew (
@@ -316,34 +331,60 @@ def _apply_tmdb_data(conn: sqlite3.Connection, cur: sqlite3.Cursor,
     """Write all TMDb fields into the database."""
 
     # ── movies table ──
-    cur.execute("""
-        UPDATE movies SET
-            tmdb_id           = ?,
-            imdb_id           = ?,
-            overview          = ?,
-            tagline           = ?,
-            runtime           = ?,
-            budget            = CASE WHEN ? > 0 THEN ? ELSE budget END,
-            status            = ?,
-            original_language = ?,
-            original_title    = ?,
-            popularity        = ?,
-            release_date      = COALESCE(NULLIF(release_date, ''), ?)
-        WHERE id = ?
-    """, (
-        d.get("id"),
-        d.get("imdb_id"),
-        d.get("overview"),
-        d.get("tagline"),
-        d.get("runtime"),
-        d.get("budget") or 0, d.get("budget"),
-        d.get("status"),
-        d.get("original_language"),
-        d.get("original_title"),
-        d.get("popularity"),
-        d.get("release_date"),
-        movie_id,
-    ))
+    # imdb_id has a UNIQUE constraint; if another row already claimed this
+    # imdb_id (duplicate titles in the Excel), skip setting it to avoid crash.
+    imdb_id = d.get("imdb_id")
+    if imdb_id:
+        clash = cur.execute(
+            "SELECT id FROM movies WHERE imdb_id=? AND id!=?", (imdb_id, movie_id)
+        ).fetchone()
+        if clash:
+            imdb_id = None   # don't overwrite the other row's claim
+
+    try:
+        cur.execute("""
+            UPDATE movies SET
+                tmdb_id           = ?,
+                imdb_id           = COALESCE(imdb_id, ?),
+                overview          = ?,
+                tagline           = ?,
+                runtime           = ?,
+                budget            = CASE WHEN ? > 0 THEN ? ELSE budget END,
+                status            = ?,
+                original_language = ?,
+                original_title    = ?,
+                popularity        = ?,
+                release_date      = COALESCE(NULLIF(release_date, ''), ?)
+            WHERE id = ?
+        """, (
+            d.get("id"),
+            imdb_id,
+            d.get("overview"),
+            d.get("tagline"),
+            d.get("runtime"),
+            d.get("budget") or 0, d.get("budget"),
+            d.get("status"),
+            d.get("original_language"),
+            d.get("original_title"),
+            d.get("popularity"),
+            d.get("release_date"),
+            movie_id,
+        ))
+    except sqlite3.IntegrityError:
+        # Rare race: retry without imdb_id
+        cur.execute("""
+            UPDATE movies SET
+                tmdb_id=?, overview=?, tagline=?, runtime=?,
+                budget=CASE WHEN ? > 0 THEN ? ELSE budget END,
+                status=?, original_language=?, original_title=?,
+                popularity=?, release_date=COALESCE(NULLIF(release_date,''),?)
+            WHERE id=?
+        """, (
+            d.get("id"), d.get("overview"), d.get("tagline"), d.get("runtime"),
+            d.get("budget") or 0, d.get("budget"),
+            d.get("status"), d.get("original_language"), d.get("original_title"),
+            d.get("popularity"), d.get("release_date"), movie_id,
+        ))
 
     # ── box_office: TMDb revenue = worldwide gross ──
     revenue = d.get("revenue") or 0
@@ -377,20 +418,34 @@ def _apply_tmdb_data(conn: sqlite3.Connection, cur: sqlite3.Cursor,
                 score=excluded.score, vote_count=excluded.vote_count
         """, (movie_id, str(round(va, 1)), vc))
 
-    # ── US MPAA certification ──
+    # ── Release schedule (all countries) + certifications ──
     for entry in d.get("release_dates", {}).get("results", []):
-        if entry.get("iso_3166_1") == "US":
-            for rd in entry.get("release_dates", []):
-                cert = (rd.get("certification") or "").strip()
-                if cert:
-                    cur.execute("""
-                        INSERT INTO certifications (movie_id, country, rating)
-                            VALUES (?, 'US', ?)
-                        ON CONFLICT(movie_id, country) DO UPDATE SET
-                            rating=excluded.rating
-                    """, (movie_id, cert))
-                    break
-            break
+        country = entry.get("iso_3166_1", "").strip()
+        if not country:
+            continue
+        best_cert = None  # pick first non-empty certification per country
+        for rd in entry.get("release_dates", []):
+            rdate = (rd.get("release_date") or "")[:10] or None  # trim time part
+            rtype = rd.get("type")                                # 1-6
+            cert  = (rd.get("certification") or "").strip() or None
+            if cert and best_cert is None:
+                best_cert = cert
+            cur.execute("""
+                INSERT INTO release_schedule
+                    (movie_id, country, release_date, release_type, certification)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(movie_id, country, release_type) DO UPDATE SET
+                    release_date  = COALESCE(excluded.release_date,  release_date),
+                    certification = COALESCE(excluded.certification, certification)
+            """, (movie_id, country, rdate, rtype, cert))
+        # Store best certification in the certifications lookup table
+        if best_cert:
+            cur.execute("""
+                INSERT INTO certifications (movie_id, country, rating)
+                    VALUES (?, ?, ?)
+                ON CONFLICT(movie_id, country) DO UPDATE SET
+                    rating=excluded.rating
+            """, (movie_id, country, best_cert))
 
     # ── Credits ──
     # Delete placeholder rows inserted during Excel import
