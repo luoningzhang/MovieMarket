@@ -67,7 +67,7 @@ def fmt_money(v):
 
 
 def run(args):
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(args.db)
     conn.row_factory = sqlite3.Row
 
     # 类型过滤
@@ -154,9 +154,6 @@ def main():
     ap.add_argument("--db",     default=DB,
                     help=f"数据库路径（默认 {DB}）")
     args = ap.parse_args()
-
-    global DB
-    DB = args.db
     run(args)
 
 
